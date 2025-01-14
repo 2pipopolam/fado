@@ -1,0 +1,25 @@
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# zig
+zig-cache/
+zig-out/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+fado
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
