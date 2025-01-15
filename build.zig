@@ -4,12 +4,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const vaxis_dep = b.dependency("vaxis", .{});
+    const vaxis_mod = vaxis_dep.module("vaxis");
+
     const exe = b.addExecutable(.{
         .name = "fado",
         .root_source_file = .{ .cwd_relative = "src/main.zig" },
         .target = target,
         .optimize = optimize,
     });
+
+    // impl vaxis
+    exe.root_module.addImport("vaxis", vaxis_mod);
 
     // minimp3 implementation
     exe.addCSourceFile(.{

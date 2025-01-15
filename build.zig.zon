@@ -1,0 +1,16 @@
+.{
+    .name = "fado",
+    .version = "0.1.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "lib",
+    },
+    .dependencies = .{
+        .vaxis = .{
+            .url = "https://github.com/rockorager/libvaxis/archive/main.tar.gz",
+            .hash = "1220d49524b81bc8a371237b9b68620c2042a12d1b1492c0cd59148bfbc2873bd542",
+        },
+    },
+}

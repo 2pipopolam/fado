@@ -1,4 +1,5 @@
 const std = @import("std");
+const vaxis = @import("vaxis");
 const c = @cImport({
     @cInclude("portaudio.h");
     @cInclude("minimp3.h");
@@ -7,7 +8,7 @@ const c = @cImport({
 
 const MAX_SAMPLES = 1024;
 const SAMPLE_RATE = 44100;
-const MP3_FRAME_MAX_SAMPLES = 1152 * 2; // Max samples per frame * 2 channels
+const MP3_FRAME_MAX_SAMPLES = 1152 * 2;
 
 const AudioError = error{
     PortAudioInitFailed,
@@ -16,6 +17,39 @@ const AudioError = error{
     FileOpenError,
     DecodingError,
     OutOfMemory,
+};
+
+const Event = union(enum) {
+    key_press: vaxis.Key,
+    winsize: vaxis.Winsize,
+};
+
+const PlayerState = enum {
+    stopped,
+    playing,
+    paused,
+};
+
+const Timer = struct {
+    const Self = @This();
+    start_time: i128,
+    interval_ns: i128,
+
+    pub fn init(interval_ms: i128) Self {
+        return Self{
+            .start_time = std.time.nanoTimestamp(),
+            .interval_ns = interval_ms * std.time.ns_per_ms,
+        };
+    }
+
+    pub fn check(self: *Self) bool {
+        const current_time = std.time.nanoTimestamp();
+        if (current_time - self.start_time >= self.interval_ns) {
+            self.start_time = current_time;
+            return true;
+        }
+        return false;
+    }
 };
 
 const AudioPlayer = struct {
@@ -28,6 +62,7 @@ const AudioPlayer = struct {
     sample_rate: i32,
     channels: i32,
     allocator: std.mem.Allocator,
+    state: PlayerState,
 
     const Self = @This();
 
@@ -46,6 +81,7 @@ const AudioPlayer = struct {
             .sample_rate = 44100,
             .channels = 2,
             .allocator = allocator,
+            .state = .stopped,
         };
     }
 
@@ -76,21 +112,19 @@ const AudioPlayer = struct {
                 self.current_sample = 0;
             }
 
-            // Get stereo samples
             const left_idx = self.current_sample;
             const right_idx = self.current_sample + 1;
             
-            out[i * 2] = self.samples[left_idx];       // Left channel
-            out[i * 2 + 1] = self.samples[right_idx];  // Right channel
+            out[i * 2] = self.samples[left_idx];
+            out[i * 2 + 1] = self.samples[right_idx];
             
-            self.current_sample += 2; // Go to next stereo
+            self.current_sample += 2;
         }
 
         return c.paContinue;
     }
 
     pub fn loadFile(self: *Self, file_path: []const u8) !void {
-        // Clean up existing resources
         if (self.stream) |stream| {
             _ = c.Pa_CloseStream(stream);
             self.stream = null;
@@ -100,7 +134,6 @@ const AudioPlayer = struct {
             self.samples = &[_]f32{};
         }
 
-        // Open and read the file
         const file = std.fs.cwd().openFile(file_path, .{}) catch {
             return AudioError.FileOpenError;
         };
@@ -110,7 +143,6 @@ const AudioPlayer = struct {
             return AudioError.FileOpenError;
         };
 
-        // Allocate buffer with error handling
         const buffer = self.allocator.alloc(u8, file_size) catch {
             return AudioError.OutOfMemory;
         };
@@ -124,12 +156,10 @@ const AudioPlayer = struct {
             return AudioError.FileOpenError;
         }
 
-        // Initialize decoder
         var mp3 = c.mp3dec_t{};
         c.mp3dec_init(&mp3);
         var first_frame = true;
 
-        // Prepare decoding buffers with max frame size
         var mp3_info: c.mp3dec_frame_info_t = undefined;
         const pcm = self.allocator.alloc(i16, MP3_FRAME_MAX_SAMPLES) catch {
             return AudioError.OutOfMemory;
@@ -139,9 +169,8 @@ const AudioPlayer = struct {
         var total_samples = std.ArrayList(f32).init(self.allocator);
         defer total_samples.deinit();
 
-        // Pre-allocate based on typical compression ratio
         try total_samples.ensureTotalCapacityPrecise(
-            @divTrunc(file_size * 12, 1000) // Approximate based on 128kbps MP3
+            @divFloor(file_size * 12, 1000)
         );
 
         var input_pos: usize = 0;
@@ -159,17 +188,14 @@ const AudioPlayer = struct {
                     self.sample_rate = mp3_info.hz;
                     self.channels = mp3_info.channels;
                     first_frame = false;
-                    std.debug.print("Detected sample rate: {d} Hz, Channels: {d}\n", .{self.sample_rate, self.channels});
                 }
                 
-                const frame_samples = @as(usize, @intCast(samples));  // samples per channel
+                const frame_samples = @as(usize, @intCast(samples));
                 var i: usize = 0;
                 while (i < frame_samples) : (i += 1) {
-                    // Calculate base index for stereo pair
                     const channels = @as(usize, @intCast(mp3_info.channels));
                     const base_idx = i * channels;
                     
-                    // Store interleaved samples
                     const left = @as(f32, @floatFromInt(pcm[base_idx])) / 32768.0;
                     const right = if (channels > 1)
                         @as(f32, @floatFromInt(pcm[base_idx + 1])) / 32768.0
@@ -189,13 +215,6 @@ const AudioPlayer = struct {
         self.sample_count = self.samples.len;
         self.current_sample = 0;
         self.current_file = file_path;
-
-        std.debug.print("Loaded file: {s} ({d} samples, {d}Hz, {d} channels)\n", .{
-            file_path, 
-            self.sample_count,
-            self.sample_rate,
-            self.channels
-        });
     }
 
     pub fn play(self: *Self) !void {
@@ -210,7 +229,6 @@ const AudioPlayer = struct {
         const device_info = c.Pa_GetDeviceInfo(output_params.device);
         if (device_info == null) return AudioError.StreamOpenFailed;
         output_params.suggestedLatency = device_info.*.defaultLowOutputLatency;
-        
         output_params.hostApiSpecificStreamInfo = null;
 
         const err = c.Pa_OpenStream(
@@ -230,14 +248,14 @@ const AudioPlayer = struct {
 
         _ = c.Pa_StartStream(self.stream.?);
         self.is_playing = true;
-        std.debug.print("Playing: {s}\n", .{self.current_file});
+        self.state = .playing;
     }
 
     pub fn pause(self: *Self) !void {
         if (!self.is_playing) return;
         _ = c.Pa_StopStream(self.stream.?);
         self.is_playing = false;
-        std.debug.print("Paused\n", .{});
+        self.state = .paused;
     }
 
     pub fn stop(self: *Self) !void {
@@ -245,9 +263,185 @@ const AudioPlayer = struct {
         _ = c.Pa_StopStream(self.stream.?);
         self.current_sample = 0;
         self.is_playing = false;
-        std.debug.print("Stopped\n", .{});
+        self.state = .stopped;
+    }
+
+    pub fn togglePlayPause(self: *Self) !void {
+        if (self.is_playing) {
+            try self.pause();
+        } else {
+            try self.play();
+        }
     }
 };
+
+fn scanMp3Files(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
+    var files = std.ArrayList([]const u8).init(allocator);
+    var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".mp3")) {
+            try files.append(try allocator.dupe(u8, entry.name));
+        }
+    }
+    return files;
+}
+
+fn drawInterface(
+    win: *const vaxis.Window, 
+    files: [][]const u8,
+    selected: usize,
+    player: *AudioPlayer,
+) !void {
+    const file_list = win.child(.{
+        .width = @divFloor(win.width, 3),
+        .border = .{ 
+            .where = .all,
+            .style = .{ .fg = .{ .rgb = .{ 64, 128, 255 } } },
+        },
+    });
+
+    const visualizer = win.child(.{
+        .x_off = file_list.width,
+        .width = win.width - file_list.width,
+        .height = win.height - 3,
+        .border = .{ 
+            .where = .all,
+            .style = .{ .fg = .{ .rgb = .{ 64, 128, 255 } } },
+        },
+    });
+
+    const controls = win.child(.{
+        .y_off = win.height - 3,
+        .height = 3,
+        .border = .{ 
+            .where = .all,
+            .style = .{ .fg = .{ .rgb = .{ 64, 128, 255 } } },
+        },
+    });
+
+    // Show files
+    for (files, 0..) |file, i| {
+        var style = vaxis.Style{};
+        if (i == selected) {
+            style.reverse = true;
+            style.bold = true;
+        }
+        if (player.is_playing and std.mem.eql(u8, file, player.current_file)) {
+            style.fg = .{ .rgb = .{ 0, 255, 0 } };
+        }
+            
+        _ = file_list.print(&[_]vaxis.Cell.Segment{.{
+            .text = file,
+            .style = style,
+        }}, .{ .row_offset = @intCast(i) });
+    }
+
+
+    const play_style: vaxis.Style = if (player.state == .playing) 
+        .{ .reverse = true, .fg = .{ .rgb = .{ 0, 255, 0 } } } 
+    else 
+        .{ .fg = .{ .rgb = .{ 0, 255, 0 } } };
+
+    const pause_style: vaxis.Style = if (player.state == .paused) 
+        .{ .reverse = true, .fg = .{ .rgb = .{ 255, 255, 0 } } } 
+    else 
+        .{ .fg = .{ .rgb = .{ 255, 255, 0 } } };
+
+    const stop_style: vaxis.Style = if (player.state == .stopped) 
+        .{ .reverse = true, .fg = .{ .rgb = .{ 255, 0, 0 } } } 
+    else 
+        .{ .fg = .{ .rgb = .{ 255, 0, 0 } } };
+
+    const buttons = [_]vaxis.Cell.Segment{
+        .{ .text = "[PLAY]", .style = play_style },
+        .{ .text = " " },
+        .{ .text = "[PAUSE]", .style = pause_style },
+        .{ .text = " " },
+        .{ .text = "[STOP]", .style = stop_style },
+        .{ .text = " " },
+        .{ .text = "[QUIT]", .style = .{} },
+    };
+    _ = controls.print(&buttons, .{ .row_offset = 1, .col_offset = 2 });
+
+    // Draw
+    if (player.sample_count > 0) {
+        const viz_height = visualizer.height - 2;
+        const viz_width = visualizer.width - 2;
+        
+        if (viz_width < 2 or viz_height < 1) return;
+        
+        const gap = 1;
+        const num_columns = @divFloor(viz_width, (1 + gap));
+        if (num_columns == 0) return;
+        
+        const window_samples = 8192;
+        const current_pos = player.current_sample;
+        const window_start = if (current_pos > window_samples/2) 
+            current_pos - window_samples/2 
+        else 
+            0;
+        const window_end = @min(window_start + window_samples, player.sample_count);
+
+        const samples_per_column = @divFloor(window_samples, num_columns);
+        if (samples_per_column == 0) return;
+        
+        var column: usize = 0;
+        while (column < num_columns) : (column += 1) {
+            const start = window_start + column * samples_per_column;
+            const end = @min(start + samples_per_column, window_end);
+            
+            var sum: f32 = 0;
+            var count: usize = 0;
+            
+            var i = start;
+            while (i < end) : (i += 2) {
+                if (i >= player.sample_count) break;
+                
+                const left = @abs(player.samples[i]);
+                const right = if (i + 1 < player.sample_count) 
+                    @abs(player.samples[i + 1]) 
+                else 
+                    left;
+                sum += (left + right) / 2.0;
+                count += 1;
+            }
+            
+            const avg = if (count > 0) sum / @as(f32, @floatFromInt(count)) else 0;
+            const height = @as(usize, @intFromFloat(avg * @as(f32, @floatFromInt(viz_height)) * 3));
+            
+            const x = column * (1 + gap);
+            if (x < viz_width) {
+                var row: usize = 0;
+                while (row < height and row < viz_height) : (row += 1) {
+                    visualizer.writeCell(
+                        @intCast(x), 
+                        @intCast(viz_height - row),
+                        .{
+                            .char = .{ .grapheme = "█" },
+                            .style = .{ 
+                                .fg = .{ .rgb = .{ 64, 128, 255 } }
+                            },
+                        },
+                    );
+                }
+                // clear column
+                while (row < viz_height) : (row += 1) {
+                    visualizer.writeCell(
+                        @intCast(x), 
+                        @intCast(viz_height - row),
+                        .{
+                            .char = .{ .grapheme = " " },
+                            .style = .{},
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -257,44 +451,77 @@ pub fn main() !void {
     var player = try AudioPlayer.init(allocator);
     defer player.deinit();
 
-    const stdin = std.io.getStdIn().reader();
-    var buffer: [1024]u8 = undefined;
+    var tty = try vaxis.Tty.init();
+    defer tty.deinit();
 
-    std.debug.print("Fado - Terminal Music Player\n", .{});
-    std.debug.print("Commands: load <file>, play, pause, stop, quit\n", .{});
+    var vx = try vaxis.init(allocator, .{});
+    defer vx.deinit(allocator, tty.anyWriter());
+
+    var loop: vaxis.Loop(Event) = .{ 
+        .tty = &tty, 
+        .vaxis = &vx 
+    };
+    try loop.init();
+    try loop.start();
+    defer loop.stop();
+
+    try vx.enterAltScreen(tty.anyWriter());
+    try vx.queryTerminal(tty.anyWriter(), 1 * std.time.ns_per_s);
+
+    var mp3_files = try scanMp3Files(allocator);
+    defer mp3_files.deinit();
+    var selected_idx: usize = 0;
+
+    // Add timer (30 fps)
+    var refresh_timer = Timer.init(33);
 
     while (true) {
-        std.debug.print("> ", .{});
-        if (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) |input| {
-            var iter = std.mem.split(u8, input, " ");
-            const command = iter.next() orelse continue;
+        
+        const event = loop.tryEvent();
 
-            if (std.mem.eql(u8, command, "quit")) {
-                break;
-            } else if (std.mem.eql(u8, command, "load")) {
-                const file = iter.next() orelse {
-                    std.debug.print("Usage: load <file>\n", .{});
-                    continue;
-                };
-                player.loadFile(file) catch |err| {
-                    std.debug.print("Error loading file: {}\n", .{err});
-                    continue;
-                };
-            } else if (std.mem.eql(u8, command, "play")) {
-                player.play() catch |err| {
-                    std.debug.print("Error playing: {}\n", .{err});
-                };
-            } else if (std.mem.eql(u8, command, "pause")) {
-                player.pause() catch |err| {
-                    std.debug.print("Error pausing: {}\n", .{err});
-                };
-            } else if (std.mem.eql(u8, command, "stop")) {
-                player.stop() catch |err| {
-                    std.debug.print("Error stopping: {}\n", .{err});
-                };
-            } else {
-                std.debug.print("Unknown command: {s}\n", .{command});
+        
+        if (event) |e| {
+            switch (e) {
+                .key_press => |key| {
+                    if (key.matches('c', .{ .ctrl = true }) or key.matches('q', .{})) {
+                        break;
+                    }
+                    
+                    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                        if (selected_idx < mp3_files.items.len -| 1) selected_idx += 1;
+                    }
+                    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                        if (selected_idx > 0) selected_idx -= 1;
+                    }
+
+                    if (key.matches(vaxis.Key.enter, .{})) {
+                        if (selected_idx < mp3_files.items.len) {
+                            try player.loadFile(mp3_files.items[selected_idx]);
+                            try player.play();
+                        }
+                    }
+                    
+                    if (key.matches(vaxis.Key.space, .{})) {
+                        try player.togglePlayPause();
+                    }
+                    
+                    if (key.matches('s', .{})) {
+                        try player.stop();
+                    }
+                },
+                .winsize => |ws| try vx.resize(allocator, tty.anyWriter(), ws),
             }
         }
+
+        // Refresh display
+        if (refresh_timer.check()) {
+            const win = vx.window();
+            win.clear();
+            try drawInterface(&win, mp3_files.items, selected_idx, &player);
+            try vx.render(tty.anyWriter());
+        }
+
+        //Small delay         
+        std.time.sleep(1 * std.time.ns_per_ms);
     }
 }
