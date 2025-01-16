@@ -93,6 +93,9 @@ const AudioPlayer = struct {
         if (self.samples.len > 0) {
             self.allocator.free(self.samples);
         }
+        if (self.current_file.len > 0) {
+            self.allocator.free(self.current_file);
+        }
     }
 
     fn audioCallback(
@@ -125,16 +128,27 @@ const AudioPlayer = struct {
     }
 
     pub fn loadFile(self: *Self, file_path: []const u8) !void {
+        if (self.is_playing) {
+            try self.stop();
+        }
+
         if (self.stream) |stream| {
             _ = c.Pa_CloseStream(stream);
             self.stream = null;
         }
+
         if (self.samples.len > 0) {
             self.allocator.free(self.samples);
             self.samples = &[_]f32{};
         }
 
-        const file = std.fs.cwd().openFile(file_path, .{}) catch {
+        const abs_path = if (std.fs.path.isAbsolute(file_path))
+            try self.allocator.dupe(u8, file_path)
+        else
+            try std.fs.cwd().realpathAlloc(self.allocator, file_path);
+        defer self.allocator.free(abs_path);
+
+        const file = std.fs.openFileAbsolute(abs_path, .{}) catch {
             return AudioError.FileOpenError;
         };
         defer file.close();
@@ -212,12 +226,15 @@ const AudioPlayer = struct {
         self.samples = try total_samples.toOwnedSlice();
         self.sample_count = self.samples.len;
         self.current_sample = 0;
-        self.current_file = file_path;
+        self.current_file = try self.allocator.dupe(u8, abs_path);
     }
 
     pub fn play(self: *Self) !void {
-        if (self.is_playing) return;
         if (self.sample_count == 0) return AudioError.NoAudioLoaded;
+
+        if (self.is_playing) {
+            try self.stop();
+        }
 
         var output_params = std.mem.zeroes(c.PaStreamParameters);
         output_params.device = c.Pa_GetDefaultOutputDevice();
@@ -290,7 +307,7 @@ fn scanDirectory(allocator: std.mem.Allocator, dir_path: []const u8) !std.ArrayL
 
     var it = dir.iterate();
     while (try it.next()) |entry| {
-        // dont show hidden dits 
+        // dont show hidden dits
         if (entry.name[0] == '.' and !std.mem.eql(u8, entry.name, "..")) continue;
 
         switch (entry.kind) {
@@ -312,7 +329,7 @@ fn scanDirectory(allocator: std.mem.Allocator, dir_path: []const u8) !std.ArrayL
         }
     }
 
-    // dirs first 
+    // dirs first
     std.sort.insertion(FileEntry, entries.items, {}, struct {
         fn lessThan(_: void, a: FileEntry, b: FileEntry) bool {
             if (a.is_dir and !b.is_dir) return true;
@@ -332,7 +349,7 @@ fn drawInterface(
     current_dir: []const u8,
     player: *AudioPlayer,
 ) !void {
-    const window_gap = 2; 
+    const window_gap = 2;
 
     // file window
     const file_list = win.child(.{
@@ -387,7 +404,6 @@ fn drawInterface(
         }
     }
 
-
     const visualizer = win.child(.{
         .x_off = file_list.width + window_gap,
         .width = win.width - file_list.width - window_gap,
@@ -405,7 +421,7 @@ fn drawInterface(
 
         if (viz_width < 2 or viz_height < 1) return;
 
-        const viz_column_gap = 1; // Отступ между колонками визуализатора
+        const viz_column_gap = 1;
         const num_columns = @divFloor(viz_width, (1 + viz_column_gap));
         if (num_columns == 0) return;
 
