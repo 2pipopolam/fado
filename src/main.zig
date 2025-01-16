@@ -289,6 +289,9 @@ fn scanMp3Files(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
     return files;
 }
 
+
+
+
 fn drawInterface(
     win: *const vaxis.Window, 
     files: [][]const u8,
@@ -297,31 +300,35 @@ fn drawInterface(
 ) !void {
     const file_list = win.child(.{
         .width = @divFloor(win.width, 3),
+        .height = win.height - 3, 
         .border = .{ 
             .where = .all,
             .style = .{ .fg = .{ .rgb = .{ 64, 128, 255 } } },
         },
     });
 
+    // visualizer window
     const visualizer = win.child(.{
-        .x_off = file_list.width,
-        .width = win.width - file_list.width,
-        .height = win.height - 3,
+        .x_off = file_list.width + 2,
+        .width = win.width - file_list.width - 2,
+        .height = win.height - 3, 
         .border = .{ 
             .where = .all,
             .style = .{ .fg = .{ .rgb = .{ 64, 128, 255 } } },
         },
     });
 
+    // controls window
     const controls = win.child(.{
+        .x_off = 0,
         .y_off = win.height - 3,
+        .width = win.width, 
         .height = 3,
         .border = .{ 
             .where = .all,
             .style = .{ .fg = .{ .rgb = .{ 64, 128, 255 } } },
         },
     });
-
     // Show files
     for (files, 0..) |file, i| {
         var style = vaxis.Style{};
@@ -340,33 +347,41 @@ fn drawInterface(
     }
 
 
-    const play_style: vaxis.Style = if (player.state == .playing) 
-        .{ .reverse = true, .fg = .{ .rgb = .{ 0, 255, 0 } } } 
-    else 
-        .{ .fg = .{ .rgb = .{ 0, 255, 0 } } };
-
-    const pause_style: vaxis.Style = if (player.state == .paused) 
-        .{ .reverse = true, .fg = .{ .rgb = .{ 255, 255, 0 } } } 
-    else 
-        .{ .fg = .{ .rgb = .{ 255, 255, 0 } } };
-
-    const stop_style: vaxis.Style = if (player.state == .stopped) 
-        .{ .reverse = true, .fg = .{ .rgb = .{ 255, 0, 0 } } } 
-    else 
-        .{ .fg = .{ .rgb = .{ 255, 0, 0 } } };
-
-    const buttons = [_]vaxis.Cell.Segment{
-        .{ .text = "[PLAY]", .style = play_style },
-        .{ .text = " " },
-        .{ .text = "[PAUSE]", .style = pause_style },
-        .{ .text = " " },
-        .{ .text = "[STOP]", .style = stop_style },
-        .{ .text = " " },
-        .{ .text = "[QUIT]", .style = .{} },
+    // Display shortcuts at the bottom
+        const controls_text = &[_]vaxis.Cell.Segment{
+        .{ .text = " Controls: ", .style = .{ .bold = true } },
+        .{ .text = "[", .style = .{} },
+        .{ .text = "SPACE", .style = .{ .fg = .{ .rgb = .{ 0, 255, 0 } }, .bold = true } },
+        .{ .text = "]", .style = .{} },
+        .{ .text = " Play/Pause  " },
+        .{ .text = "[", .style = .{} },
+        .{ .text = "S", .style = .{ .fg = .{ .rgb = .{ 255, 0, 0 } }, .bold = true } },
+        .{ .text = "]", .style = .{} },
+        .{ .text = " Stop  " },
+        .{ .text = "[", .style = .{} },
+        .{ .text = "↑↓", .style = .{ .fg = .{ .rgb = .{ 255, 255, 0 } }, .bold = true } },
+        .{ .text = "]", .style = .{} },
+        .{ .text = " Navigate  " },
+        .{ .text = "[", .style = .{} },
+        .{ .text = "Enter", .style = .{ .fg = .{ .rgb = .{ 0, 255, 255 } }, .bold = true } },
+        .{ .text = "]", .style = .{} },
+        .{ .text = " Select  " },
+        .{ .text = "[", .style = .{} },
+        .{ .text = "Q", .style = .{ .fg = .{ .rgb = .{ 255, 128, 128 } }, .bold = true } },
+        .{ .text = "]", .style = .{} },
+        .{ .text = " Quit" },
     };
-    _ = controls.print(&buttons, .{ .row_offset = 1, .col_offset = 2 });
 
-    // Draw
+    const inner_controls = controls.child(.{
+        .x_off = 1,  
+        .y_off = 1, 
+        .width = controls.width - 2,  
+        .height = 1,  
+    });
+
+    _ = inner_controls.print(controls_text, .{});
+
+    // Draw visualizer
     if (player.sample_count > 0) {
         const viz_height = visualizer.height - 2;
         const viz_width = visualizer.width - 2;
@@ -442,6 +457,9 @@ fn drawInterface(
         }
     }
 }
+
+
+
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

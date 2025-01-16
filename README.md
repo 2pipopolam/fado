@@ -1,22 +1,25 @@
 # Fado - Terminal MP3 Player
 
-A lightweight terminal-based MP3 player written in Zig. Fado provides a simple interface for playing MP3 files directly from your terminal.
+A lightweight terminal-based MP3 player written in Zig with modern TUI interface. Fado provides a simple yet elegant interface for playing MP3 files directly from your terminal.
+
+![Fado Screenshot](./pic_music.png)
 
 ## Features
 
-- Simple terminal interface
-- MP3 playback with basic controls (play, pause, stop)
-- Proper stereo audio handling
+- Modern TUI using Vaxis library
+- Real-time audio visualization
+- File browser interface
+- Stereo audio playback
 - Automatic sample rate detection
 - Low memory footprint
-- Built with Zig and PortAudio
+- Simple keyboard controls
 
 ## Requirements
 
-- Zig 0.11.0 or later
+- Zig 0.13.0 or later
 - PortAudio v19
 - pkg-config
-- A C compiler (for linking)
+- C compiler (for linking)
 
 ### On Nix/NixOS:
 ```bash
@@ -53,20 +56,31 @@ zig build
 
 ## Usage
 
-Run Fado:
+Run Fado from the directory containing your MP3 files:
 ```bash
 zig build run
 ```
 
-Or after installation:
+Or after building:
 ```bash
 ./zig-out/bin/fado
 ```
 
-### Commands
+### Controls
 
-- `load <file>` - Load an MP3 file
-- `play` - Start playback
-- `pause` - Pause playback
-- `stop` - Stop playback
-- `quit` - Exit the program
+- `SPACE` - Play/Pause
+- `S` - Stop
+- `↑↓` - Navigate through files
+- `Enter` - Select and play file
+- `Q` - Quit
+
+## Built With
+
+- [Zig](https://ziglang.org/) - System programming language
+- [PortAudio](http://www.portaudio.com/) - Audio I/O library
+- [Vaxis](https://github.com/nullenv/vaxis) - Terminal UI library
+- [minimp3](https://github.com/lieff/minimp3) - MP3 decoder
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
