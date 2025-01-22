@@ -52,6 +52,13 @@ const Timer = struct {
     }
 };
 
+const AudioCache = struct {
+    samples: []f32,
+    sample_count: usize,
+    sample_rate: i32,
+    channels: i32,
+};
+
 const AudioPlayer = struct {
     stream: ?*c.PaStream,
     is_playing: bool,
@@ -63,6 +70,10 @@ const AudioPlayer = struct {
     channels: i32,
     allocator: std.mem.Allocator,
     state: PlayerState,
+    cache: std.StringHashMap(AudioCache),
+    is_loading: bool,
+    total_size: usize,
+    loaded_size: usize,
 
     const Self = @This();
 
@@ -82,6 +93,10 @@ const AudioPlayer = struct {
             .channels = 2,
             .allocator = allocator,
             .state = .stopped,
+            .cache = std.StringHashMap(AudioCache).init(allocator),
+            .is_loading = false,
+            .total_size = 0,
+            .loaded_size = 0,
         };
     }
 
@@ -90,6 +105,13 @@ const AudioPlayer = struct {
             _ = c.Pa_CloseStream(stream);
         }
         _ = c.Pa_Terminate();
+
+        var cache_iter = self.cache.iterator();
+        while (cache_iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.samples);
+        }
+        self.cache.deinit();
+
         if (self.samples.len > 0) {
             self.allocator.free(self.samples);
         }
@@ -137,20 +159,26 @@ const AudioPlayer = struct {
             self.stream = null;
         }
 
-        if (self.samples.len > 0) {
-            self.allocator.free(self.samples);
-            self.samples = &[_]f32{};
-        }
-
         const abs_path = if (std.fs.path.isAbsolute(file_path))
             try self.allocator.dupe(u8, file_path)
         else
             try std.fs.cwd().realpathAlloc(self.allocator, file_path);
         defer self.allocator.free(abs_path);
 
-        const file = std.fs.openFileAbsolute(abs_path, .{}) catch {
-            return AudioError.FileOpenError;
-        };
+        if (self.cache.get(abs_path)) |cached| {
+            if (self.samples.len > 0) {
+                self.allocator.free(self.samples);
+            }
+            self.samples = try self.allocator.dupe(f32, cached.samples);
+            self.sample_count = cached.sample_count;
+            self.sample_rate = cached.sample_rate;
+            self.channels = cached.channels;
+            self.current_sample = 0;
+            self.current_file = try self.allocator.dupe(u8, abs_path);
+            return;
+        }
+
+        const file = try std.fs.openFileAbsolute(abs_path, .{});
         defer file.close();
 
         const file_size = file.getEndPos() catch {
@@ -227,6 +255,13 @@ const AudioPlayer = struct {
         self.sample_count = self.samples.len;
         self.current_sample = 0;
         self.current_file = try self.allocator.dupe(u8, abs_path);
+
+        try self.cache.put(try self.allocator.dupe(u8, abs_path), .{
+            .samples = try self.allocator.dupe(f32, self.samples),
+            .sample_count = self.sample_count,
+            .sample_rate = self.sample_rate,
+            .channels = self.channels,
+        });
     }
 
     pub fn play(self: *Self) !void {
@@ -287,6 +322,14 @@ const AudioPlayer = struct {
         } else {
             try self.play();
         }
+    }
+
+    pub fn clearCache(self: *Self) void {
+        var cache_iter = self.cache.iterator();
+        while (cache_iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.samples);
+        }
+        self.cache.clearAndFree();
     }
 };
 
@@ -383,7 +426,7 @@ fn drawInterface(
                 .text = if (std.mem.eql(u8, entry.name, ".."))
                     ".."
                 else
-                    try std.fmt.allocPrint(allocator, "DIR: {s}", .{entry.name}),
+                    try std.fmt.allocPrint(allocator, "📁 {s}", .{entry.name}),
                 .style = style,
             }}, .{ .row_offset = row_offset });
         } else {
@@ -398,10 +441,18 @@ fn drawInterface(
             }
 
             _ = file_list.print(&[_]vaxis.Cell.Segment{.{
-                .text = entry.name,
+                .text = try std.fmt.allocPrint(allocator, "♪ {s}", .{entry.name}),
                 .style = style,
             }}, .{ .row_offset = row_offset });
         }
+    }
+
+    if (player.is_loading) {
+        const progress = @as(f32, @floatFromInt(player.loaded_size)) / @as(f32, @floatFromInt(player.total_size)) * 100;
+        _ = file_list.print(&[_]vaxis.Cell.Segment{.{
+            .text = try std.fmt.allocPrint(allocator, "Loading: {d:.1}%", .{progress}),
+            .style = .{ .fg = .{ .rgb = .{ 255, 255, 0 } } },
+        }}, .{});
     }
 
     const visualizer = win.child(.{
